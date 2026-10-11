@@ -6,11 +6,12 @@ A Python REST API for creating AI agents, managing conversations, and generating
 
 - **Agent management:** Create and list AI agents with configurable system instructions.
 - **Conversation management:** Create conversations associated with specific agents.
-- **AI-powered responses:** Generate contextual replies using Google Gemini.
-- **Conversation history:** Persist user and assistant messages in SQLite.
-- **REST API:** JSON-based endpoints built with Flask.
-- **Automated testing:** Validate API behavior and error handling using pytest.
-- **Configuration and secrets:** Load API credentials from environment variables rather than hardcoding them in source files.
+- **AI-powered responses:** Generate context-aware replies using Google's Gemini API.
+- **Persistent conversation history:** Store user and assistant messages in SQLite for multi-turn conversations.
+- **Idempotent message retries:** Use an `Idempotency-Key` header to avoid duplicate message storage and repeated AI generation when retrying an already completed request.
+- **REST API:** Expose JSON-based endpoints using Flask.
+- **Automated testing:** Test API operations, validation, error handling, and idempotency behavior using pytest.
+- **Secure configuration:** Load API credentials from environment variables rather than hardcoding them in source files.
 
 ## Tech Stack
 
@@ -161,6 +162,33 @@ GET /conversations/<conversation_id>/messages
 
 The response contains the messages stored for that conversation.
 
+### 6. Retry a message safely
+
+The message endpoint supports an optional `Idempotency-Key` HTTP header for user messages.
+
+```http
+POST /conversations/<conversation_id>/messages
+Content-Type: application/json
+Idempotency-Key: exam-tips-001
+```
+
+```json
+{
+  "role": "user",
+  "content": "Give me three practical tips for preparing for a database lab exam."
+}
+```
+
+**How it works:**
+
+- Send the same request again with the same key after a successful response: the API returns the stored result without generating another AI response.
+- Reuse a key with different message content or a different conversation: the API returns a `409 Conflict` response.
+- Retry after an AI-provider failure using the same key: the API reuses the previously stored user message and retries response generation rather than inserting another copy.
+
+Generate a new key for each distinct message. Clients should retain the original key when retrying a request whose outcome is uncertain.
+
+**Note:** This implementation handles ordinary retries, but does not guarantee exactly-once AI processing under simultaneous concurrent requests.
+
 ## Running Tests
 
 Run the automated test suite from the project root:
@@ -169,7 +197,7 @@ Run the automated test suite from the project root:
 python -m pytest -q
 ```
 
-The tests cover agent and conversation operations, input validation, message history, mocked AI responses, and AI-provider failure handling.
+The test suite covers agent and conversation operations, input validation, persistent message history, mocked AI responses, AI-provider failures, and idempotency behavior, including duplicate retries, conflicting key reuse, and recovery after a failed AI request.
 
 ## Security Notes
 
@@ -180,12 +208,12 @@ The tests cover agent and conversation operations, input validation, message his
 
 ## Current Status
 
-The backend supports persistent agent and conversation management, Gemini-generated responses, multi-turn message history, and automated tests.
+Implemented persistent agent and conversation management, context-aware Gemini responses, multi-turn conversation history, idempotency-key support for message retries, and automated tests covering core functionality and failure scenarios.
 
 ## Future Improvements
 
 - Add authentication and per-user agent ownership.
-- Improve retry and recovery behavior when the AI provider fails.
+- Improve concurrency safety and retry handling.
 - Add structured logging and request tracing.
 - Introduce API schemas and more comprehensive integration tests.
 - Add deployment configuration and operational monitoring.
