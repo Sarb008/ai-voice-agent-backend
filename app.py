@@ -1,4 +1,4 @@
-
+from llm_provider import generate_reply
 from pathlib import Path
 from uuid import uuid4
 
@@ -78,8 +78,8 @@ def create_app(test_config=None):
     def list_agents():
         saved_agents = get_all_agents(app.config["DATABASE"])
         return {"agents": saved_agents}
-    
-    
+
+
     @app.post("/agents/<agent_id>/conversations")
     def create_conversation_endpoint(agent_id):
         data = request.get_json(silent=True)
@@ -123,7 +123,9 @@ def create_app(test_config=None):
 
         return {"conversation": conversation}, 200
 
-    
+
+
+
     @app.post("/conversations/<conversation_id>/messages")
     def create_message_endpoint(conversation_id):
         data = request.get_json(silent=True)
@@ -152,22 +154,80 @@ def create_app(test_config=None):
         if conversation is None:
             return {"error": "Conversation not found"}, 404
 
-        message = {
+        db_path = app.config["DATABASE"]
+
+        # Save the incoming message first.
+        user_message = {
             "id": str(uuid4()),
             "conversation_id": conversation_id,
             "role": role,
             "content": content.strip(),
         }
 
-        saved_message = create_message(
-            app.config["DATABASE"],
-            message,
+        saved_message = create_message(db_path, user_message)
+
+        # Manually submitted assistant messages remain supported.
+        if role == "assistant":
+            return {
+                "message": "Message created successfully",
+                "data": saved_message,
+            }, 201
+
+        # Find the agent that owns this conversation.
+        agents = get_all_agents(db_path)
+        agent = next(
+            (
+                item for item in agents
+                if item["id"] == conversation["agent_id"]
+            ),
+            None,
+        )
+
+        if agent is None:
+            app.logger.error(
+                "Agent %s not found for conversation %s",
+                conversation["agent_id"],
+                conversation_id,
+            )
+            return {"error": "Conversation agent not found"}, 500
+
+        # Include the latest user message and previous conversation history.
+        history = get_messages(db_path, conversation_id)
+
+        try:
+            reply = generate_reply(
+                agent["system_prompt"],
+                history,
+            )
+        except Exception:
+            app.logger.exception(
+                "AI response generation failed for conversation %s",
+                conversation_id,
+            )
+            return {
+                "error": "AI response generation failed. "
+                         "Your message was saved; please try again."
+            }, 502
+
+        # Persist the AI-generated response.
+        assistant_message = {
+            "id": str(uuid4()),
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": reply,
+        }
+
+        saved_assistant_message = create_message(
+            db_path,
+            assistant_message,
         )
 
         return {
-            "message": "Message created successfully",
+            "message": "AI response generated successfully",
             "data": saved_message,
+            "assistant_message": saved_assistant_message,
         }, 201
+
 
     @app.get("/conversations/<conversation_id>/messages")
     def list_messages_endpoint(conversation_id):

@@ -1,4 +1,4 @@
-
+from unittest.mock import patch
 import pytest
 
 from app import create_app
@@ -80,30 +80,55 @@ def test_get_missing_conversation(client):
     assert response.get_json()["error"] == "Conversation not found"
 
 
+
 def test_create_message(client, agent_id):
     conversation_response = client.post(
         f"/agents/{agent_id}/conversations"
     )
     conversation_id = conversation_response.get_json()["conversation"]["id"]
 
-    response = client.post(
-        f"/conversations/{conversation_id}/messages",
-        json={
-            "role": "user",
-            "content": "Hello, can you help me?",
-        },
-    )
+    with patch(
+        "app.generate_reply",
+        return_value="Hello! How can I help you?",
+    ) as mock_generate:
+        response = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json={
+                "role": "user",
+                "content": "Hello, can you help me?",
+            },
+        )
 
     assert response.status_code == 201
 
     data = response.get_json()
-    message = data["data"]
+    user_message = data["data"]
+    assistant_message = data["assistant_message"]
 
-    assert data["message"] == "Message created successfully"
-    assert message["conversation_id"] == conversation_id
-    assert message["role"] == "user"
-    assert message["content"] == "Hello, can you help me?"
-    assert message["id"]
+    assert data["message"] == "AI response generated successfully"
+
+    assert user_message["conversation_id"] == conversation_id
+    assert user_message["role"] == "user"
+    assert user_message["content"] == "Hello, can you help me?"
+    assert user_message["id"]
+
+    assert assistant_message["conversation_id"] == conversation_id
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"] == "Hello! How can I help you?"
+    assert assistant_message["id"]
+
+    mock_generate.assert_called_once_with(
+        "You are a helpful assistant.",
+        [
+            {
+                "id": user_message["id"],
+                "conversation_id": conversation_id,
+                "role": "user",
+                "content": "Hello, can you help me?",
+                "created_at": user_message["created_at"],
+            }
+        ],
+    )
 
 
 def test_create_message_with_invalid_role(client, agent_id):
@@ -142,21 +167,26 @@ def test_create_message_with_empty_content(client, agent_id):
     assert response.get_json()["error"] == "content must be a non-empty string"
 
 
+
 def test_list_messages(client, agent_id):
     conversation_response = client.post(
         f"/agents/{agent_id}/conversations"
     )
     conversation_id = conversation_response.get_json()["conversation"]["id"]
 
-    for role, content in [
-        ("user", "Hello"),
-        ("assistant", "Hi! How can I help?"),
-    ]:
+    with patch(
+        "app.generate_reply",
+        return_value="Hi! How can I help?",
+    ):
         response = client.post(
             f"/conversations/{conversation_id}/messages",
-            json={"role": role, "content": content},
+            json={
+                "role": "user",
+                "content": "Hello",
+            },
         )
-        assert response.status_code == 201
+
+    assert response.status_code == 201
 
     response = client.get(
         f"/conversations/{conversation_id}/messages"
@@ -171,3 +201,36 @@ def test_list_messages(client, agent_id):
     assert messages[0]["content"] == "Hello"
     assert messages[1]["role"] == "assistant"
     assert messages[1]["content"] == "Hi! How can I help?"
+
+
+def test_ai_failure_preserves_user_message(client, agent_id):
+    conversation_response = client.post(
+        f"/agents/{agent_id}/conversations"
+    )
+    conversation_id = conversation_response.get_json()["conversation"]["id"]
+
+    with patch(
+        "app.generate_reply",
+        side_effect=RuntimeError("Simulated provider failure"),
+    ):
+        response = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json={
+                "role": "user",
+                "content": "Can you help me?",
+            },
+        )
+
+    assert response.status_code == 502
+    assert "AI response generation failed" in response.get_json()["error"]
+
+    history_response = client.get(
+        f"/conversations/{conversation_id}/messages"
+    )
+
+    assert history_response.status_code == 200
+
+    messages = history_response.get_json()["messages"]
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "Can you help me?"
