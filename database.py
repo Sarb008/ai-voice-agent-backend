@@ -54,6 +54,26 @@ def init_db(db_path):
                     ON DELETE CASCADE
             )
         """)
+        
+                # Add idempotency support to existing databases.
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(messages)"
+            ).fetchall()
+        }
+
+        if "idempotency_key" not in columns:
+            connection.execute(
+                "ALTER TABLE messages ADD COLUMN idempotency_key TEXT"
+            )
+
+        connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_messages_idempotency_key_role
+            ON messages (idempotency_key, role)
+            WHERE idempotency_key IS NOT NULL
+        """)
 
         connection.commit()
     finally:
@@ -155,14 +175,21 @@ def create_message(db_path, message):
     try:
         connection.execute(
             """
-            INSERT INTO messages (id, conversation_id, role, content)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO messages (
+                id,
+                conversation_id,
+                role,
+                content,
+                idempotency_key
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 message["id"],
                 message["conversation_id"],
                 message["role"],
                 message["content"],
+                message.get("idempotency_key"),
             ),
         )
 
@@ -193,5 +220,28 @@ def get_messages(db_path, conversation_id):
         ).fetchall()
 
         return [dict(row) for row in rows]
+    finally:
+        connection.close()
+        
+def get_message_by_idempotency_key(
+    db_path,
+    idempotency_key,
+    role,
+):
+    """Find an existing message associated with a request key."""
+    connection = get_db_connection(db_path)
+
+    try:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE idempotency_key = ?
+              AND role = ?
+            """,
+            (idempotency_key, role),
+        ).fetchone()
+
+        return dict(row) if row is not None else None
     finally:
         connection.close()

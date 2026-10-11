@@ -12,6 +12,7 @@ from database import (
     get_conversation,
     create_message,
     get_messages,
+    get_message_by_idempotency_key,
 )
 
 
@@ -126,6 +127,7 @@ def create_app(test_config=None):
 
 
 
+    
     @app.post("/conversations/<conversation_id>/messages")
     def create_message_endpoint(conversation_id):
         data = request.get_json(silent=True)
@@ -155,25 +157,141 @@ def create_app(test_config=None):
             return {"error": "Conversation not found"}, 404
 
         db_path = app.config["DATABASE"]
+        content = content.strip()
 
-        # Save the incoming message first.
-        user_message = {
-            "id": str(uuid4()),
-            "conversation_id": conversation_id,
-            "role": role,
-            "content": content.strip(),
-        }
+        # Idempotency keys are supported for user messages.
+        idempotency_key = request.headers.get("Idempotency-Key")
 
-        saved_message = create_message(db_path, user_message)
+        if idempotency_key is not None:
+            idempotency_key = idempotency_key.strip()
 
-        # Manually submitted assistant messages remain supported.
+            if not idempotency_key:
+                return {
+                    "error": "Idempotency-Key must not be empty"
+                }, 400
+
+            if len(idempotency_key) > 200:
+                return {
+                    "error": "Idempotency-Key must be at most 200 characters"
+                }, 400
+
+            if role != "user":
+                return {
+                    "error": "Idempotency-Key is supported only for user messages"
+                }, 400
+
+            existing_message = get_message_by_idempotency_key(
+                db_path,
+                idempotency_key,
+                "user",
+            )
+
+            if existing_message is not None:
+                if (
+                    existing_message["conversation_id"] != conversation_id
+                    or existing_message["content"] != content
+                ):
+                    return {
+                        "error": (
+                            "Idempotency-Key was already used "
+                            "for a different request"
+                        )
+                    }, 409
+
+                # A previous request may have saved the user message
+                # but failed before saving the assistant response.
+                history = get_messages(db_path, conversation_id)
+                assistant_message = next(
+                    (
+                        message
+                        for message in history
+                        if message["role"] == "assistant"
+                        and message.get("idempotency_key") == idempotency_key
+                    ),
+                    None,
+                )
+
+                if assistant_message is not None:
+                    return {
+                        "message": "Request already processed",
+                        "data": existing_message,
+                        "assistant_message": assistant_message,
+                    }, 200
+
+                saved_message = existing_message
+
+            else:
+                saved_message = None
+        else:
+            saved_message = None
+
+        # Save a new message only if this request has not already
+        # saved one under its idempotency key.
+        if saved_message is None:
+            user_message = {
+                "id": str(uuid4()),
+                "conversation_id": conversation_id,
+                "role": role,
+                "content": content,
+                "idempotency_key": idempotency_key,
+            }
+
+            try:
+                saved_message = create_message(db_path, user_message)
+            except Exception:
+                # Another request may have inserted the same key
+                # between our lookup and insert.
+                if idempotency_key is None:
+                    raise
+
+                existing_message = get_message_by_idempotency_key(
+                    db_path,
+                    idempotency_key,
+                    "user",
+                )
+
+                if existing_message is None:
+                    raise
+
+                if (
+                    existing_message["conversation_id"] != conversation_id
+                    or existing_message["content"] != content
+                ):
+                    return {
+                        "error": (
+                            "Idempotency-Key was already used "
+                            "for a different request"
+                        )
+                    }, 409
+
+                saved_message = existing_message
+
+                history = get_messages(db_path, conversation_id)
+                assistant_message = next(
+                    (
+                        message
+                        for message in history
+                        if message["role"] == "assistant"
+                        and message.get("idempotency_key") == idempotency_key
+                    ),
+                    None,
+                )
+
+                if assistant_message is not None:
+                    return {
+                        "message": "Request already processed",
+                        "data": saved_message,
+                        "assistant_message": assistant_message,
+                    }, 200
+
+        # Manually submitted assistant messages remain supported
+        # when no idempotency key is supplied.
         if role == "assistant":
             return {
                 "message": "Message created successfully",
                 "data": saved_message,
             }, 201
 
-        # Find the agent that owns this conversation.
         agents = get_all_agents(db_path)
         agent = next(
             (
@@ -191,30 +309,29 @@ def create_app(test_config=None):
             )
             return {"error": "Conversation agent not found"}, 500
 
-        # Include the latest user message and previous conversation history.
         history = get_messages(db_path, conversation_id)
 
         try:
-            reply = generate_reply(
-                agent["system_prompt"],
-                history,
-            )
+            reply = generate_reply(agent["system_prompt"], history)
         except Exception:
             app.logger.exception(
                 "AI response generation failed for conversation %s",
                 conversation_id,
             )
             return {
-                "error": "AI response generation failed. "
-                         "Your message was saved; please try again."
+                "error": (
+                    "AI response generation failed. "
+                    "Your message was saved; please retry with the same "
+                    "Idempotency-Key."
+                )
             }, 502
 
-        # Persist the AI-generated response.
         assistant_message = {
             "id": str(uuid4()),
             "conversation_id": conversation_id,
             "role": "assistant",
             "content": reply,
+            "idempotency_key": idempotency_key,
         }
 
         saved_assistant_message = create_message(

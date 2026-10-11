@@ -117,17 +117,20 @@ def test_create_message(client, agent_id):
     assert assistant_message["content"] == "Hello! How can I help you?"
     assert assistant_message["id"]
 
+    expected_history = [
+        {
+            "id": user_message["id"],
+            "conversation_id": conversation_id,
+            "role": "user",
+            "content": "Hello, can you help me?",
+            "created_at": user_message["created_at"],
+            "idempotency_key": None,
+        }
+    ]
+
     mock_generate.assert_called_once_with(
         "You are a helpful assistant.",
-        [
-            {
-                "id": user_message["id"],
-                "conversation_id": conversation_id,
-                "role": "user",
-                "content": "Hello, can you help me?",
-                "created_at": user_message["created_at"],
-            }
-        ],
+        expected_history,
     )
 
 
@@ -234,3 +237,126 @@ def test_ai_failure_preserves_user_message(client, agent_id):
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "Can you help me?"
+    
+
+def test_idempotent_retry_does_not_call_ai_twice(client, agent_id):
+    conversation = client.post(
+        f"/agents/{agent_id}/conversations"
+    ).get_json()["conversation"]
+    conversation_id = conversation["id"]
+
+    headers = {"Idempotency-Key": "request-001"}
+    payload = {"role": "user", "content": "Hello"}
+
+    with patch(
+        "app.generate_reply",
+        return_value="Hello there!",
+    ) as mock_generate:
+        first = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json=payload,
+            headers=headers,
+        )
+        second = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json=payload,
+            headers=headers,
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert second.get_json()["message"] == "Request already processed"
+    assert first.get_json()["data"]["id"] == second.get_json()["data"]["id"]
+    assert (
+        first.get_json()["assistant_message"]["id"]
+        == second.get_json()["assistant_message"]["id"]
+    )
+    mock_generate.assert_called_once()
+
+    history = client.get(
+        f"/conversations/{conversation_id}/messages"
+    ).get_json()["messages"]
+
+    assert len(history) == 2
+
+
+def test_idempotency_key_reused_with_different_content_returns_conflict(
+    client,
+    agent_id,
+):
+    conversation = client.post(
+        f"/agents/{agent_id}/conversations"
+    ).get_json()["conversation"]
+    conversation_id = conversation["id"]
+
+    headers = {"Idempotency-Key": "request-002"}
+
+    with patch(
+        "app.generate_reply",
+        return_value="Reply",
+    ):
+        first = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "Hello"},
+            headers=headers,
+        )
+
+        second = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json={"role": "user", "content": "Something else"},
+            headers=headers,
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 409
+
+    history = client.get(
+        f"/conversations/{conversation_id}/messages"
+    ).get_json()["messages"]
+
+    assert len(history) == 2
+
+
+def test_retry_after_ai_failure_reuses_user_message(client, agent_id):
+    conversation = client.post(
+        f"/agents/{agent_id}/conversations"
+    ).get_json()["conversation"]
+    conversation_id = conversation["id"]
+
+    headers = {"Idempotency-Key": "request-003"}
+    payload = {"role": "user", "content": "Can you help?"}
+
+    with patch(
+        "app.generate_reply",
+        side_effect=[
+            RuntimeError("Temporary failure"),
+            "Yes, I can help!",
+        ],
+    ) as mock_generate:
+        first = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json=payload,
+            headers=headers,
+        )
+        second = client.post(
+            f"/conversations/{conversation_id}/messages",
+            json=payload,
+            headers=headers,
+        )
+
+    assert first.status_code == 502
+    assert second.status_code == 201
+    assert second.get_json()["assistant_message"]["content"] == (
+        "Yes, I can help!"
+    )
+    mock_generate.assert_called.call_count if False else None
+    assert mock_generate.call_count == 2
+
+    history = client.get(
+        f"/conversations/{conversation_id}/messages"
+    ).get_json()["messages"]
+
+    assert len(history) == 2
+    assert history[0]["role"] == "user"
+    assert history[1]["role"] == "assistant"
+
