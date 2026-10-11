@@ -1,20 +1,20 @@
 
 import pytest
 
-from app import app, agents
+from app import create_app
 
 
 @pytest.fixture
-def client():
-    app.config["TESTING"] = True
+def client(tmp_path):
+    test_database = tmp_path / "test_agents.db"
 
-    # Start each test with an empty agent collection.
-    agents.clear()
+    app = create_app({
+        "TESTING": True,
+        "DATABASE": str(test_database),
+    })
 
     with app.test_client() as test_client:
         yield test_client
-
-    agents.clear()
 
 
 def test_health_check(client):
@@ -30,8 +30,8 @@ def test_create_agent(client):
         json={
             "name": "Campus Helpdesk",
             "description": "Answers student questions",
-            "system_prompt": "You are a helpful assistant."
-        }
+            "system_prompt": "You are a helpful assistant.",
+        },
     )
 
     assert response.status_code == 201
@@ -40,14 +40,13 @@ def test_create_agent(client):
     assert data["message"] == "Agent created successfully"
     assert data["agent"]["name"] == "Campus Helpdesk"
     assert data["agent"]["id"]
+    assert data["agent"]["created_at"]
 
 
 def test_create_agent_without_name(client):
     response = client.post(
         "/agents",
-        json={
-            "system_prompt": "You are a helpful assistant."
-        }
+        json={"system_prompt": "You are a helpful assistant."},
     )
 
     assert response.status_code == 400
@@ -62,12 +61,52 @@ def test_list_agents(client):
         json={
             "name": "Campus Helpdesk",
             "description": "Answers student questions",
-            "system_prompt": "You are a helpful assistant."
-        }
+            "system_prompt": "You are a helpful assistant.",
+        },
     )
 
     response = client.get("/agents")
 
     assert response.status_code == 200
-    assert len(response.get_json()["agents"]) == 1
-    assert response.get_json()["agents"][0]["name"] == "Campus Helpdesk"
+
+    data = response.get_json()
+    assert len(data["agents"]) == 1
+    assert data["agents"][0]["name"] == "Campus Helpdesk"
+
+
+def test_agent_persists_after_app_restart(tmp_path):
+    database_path = str(tmp_path / "persistent_agents.db")
+
+    first_app = create_app({
+        "TESTING": True,
+        "DATABASE": database_path,
+    })
+
+    with first_app.test_client() as client:
+        response = client.post(
+            "/agents",
+            json={
+                "name": "Persistent Agent",
+                "description": "Persistence test",
+                "system_prompt": "You are a test assistant.",
+            },
+        )
+
+        assert response.status_code == 201
+        created_id = response.get_json()["agent"]["id"]
+
+    # Create a fresh Flask app using the same database file.
+    second_app = create_app({
+        "TESTING": True,
+        "DATABASE": database_path,
+    })
+
+    with second_app.test_client() as client:
+        response = client.get("/agents")
+
+        assert response.status_code == 200
+        saved_agents = response.get_json()["agents"]
+
+        assert len(saved_agents) == 1
+        assert saved_agents[0]["id"] == created_id
+        assert saved_agents[0]["name"] == "Persistent Agent"
