@@ -352,6 +352,24 @@
     let conversationId = null;
     let sending = false;
 
+    const STORAGE_AGENT_KEY = "agentforge_selected_agent";
+    const STORAGE_CONVERSATION_KEY = "agentforge_conversation";
+
+    function saveSession() {
+        if (selectedAgent) {
+            localStorage.setItem(STORAGE_AGENT_KEY, selectedAgent.id);
+        }
+
+        if (conversationId) {
+            localStorage.setItem(STORAGE_CONVERSATION_KEY, conversationId);
+        }
+    }
+
+    function clearSession() {
+        localStorage.removeItem(STORAGE_AGENT_KEY);
+        localStorage.removeItem(STORAGE_CONVERSATION_KEY);
+    }
+
     async function api(url, options = {}) {
         const response = await fetch(url, options);
 
@@ -502,6 +520,7 @@
             );
 
             conversationId = data.conversation.id;
+            saveSession();
 
             document.getElementById("messages").innerHTML =
                 '<div class="empty">Conversation ready. Send a message.</div>';
@@ -637,8 +656,75 @@
             }
         });
 
+    async function restoreSession() {
+        const agentId = localStorage.getItem(STORAGE_AGENT_KEY);
+        const savedConversationId =
+            localStorage.getItem(STORAGE_CONVERSATION_KEY);
+
+        if (!agentId || !savedConversationId) {
+            await loadAgents();
+            return;
+        }
+
+        try {
+            const agentsData = await api("/agents");
+
+            const agent = agentsData.agents.find(
+                item => item.id === agentId
+            );
+
+            if (!agent) {
+                clearSession();
+                await loadAgents();
+                return;
+            }
+
+            await api(`/conversations/${savedConversationId}`);
+
+            selectedAgent = agent;
+            conversationId = savedConversationId;
+
+            document.getElementById("current-agent").textContent =
+                agent.name;
+
+            document.getElementById("current-description").textContent =
+                agent.description || "AI agent";
+
+            document.getElementById("message-input").disabled = false;
+            document.getElementById("send-button").disabled = false;
+
+            await loadAgents();
+
+            const data = await api(
+                `/conversations/${conversationId}/messages`
+            );
+
+            const container = document.getElementById("messages");
+            container.innerHTML = "";
+
+            if (!data.messages.length) {
+                container.innerHTML =
+                    '<div class="empty">Conversation ready. Send a message.</div>';
+            } else {
+                for (const message of data.messages) {
+                    addMessage(message.role, message.content);
+                }
+            }
+
+        } catch (error) {
+            clearSession();
+
+            selectedAgent = null;
+            conversationId = null;
+
+            await loadAgents();
+
+            document.getElementById("messages").innerHTML =
+                '<div class="empty">Select an agent to start a conversation.</div>';
+        }
+    }
     checkHealth();
-    loadAgents();
+    restoreSession();
 </script>
 
 </body>
