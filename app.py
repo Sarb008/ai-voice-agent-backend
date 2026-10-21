@@ -2,7 +2,7 @@ from llm_provider import generate_reply
 from pathlib import Path
 from uuid import uuid4
 
-from flask import Flask, request
+from flask import Flask, request, render_template
 
 from database import (
     init_db,
@@ -29,6 +29,10 @@ def create_app(test_config=None):
         app.config.update(test_config)
 
     init_db(app.config["DATABASE"])
+    
+    @app.get("/")
+    def index():
+        return render_template("index.html")
 
     @app.get("/health")
     def health_check():
