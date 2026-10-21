@@ -203,6 +203,25 @@
             border: 1px solid #29334c;
         }
 
+        .message p:first-child {
+            margin-top: 0;
+        }
+
+        .message p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message pre {
+            overflow-x: auto;
+            padding: 12px;
+            background: #0b1020;
+            border-radius: 7px;
+        }
+
+        .message code {
+            font-family: Consolas, monospace;
+        }
+
         .role {
             display: block;
             font-size: 11px;
@@ -249,6 +268,8 @@
             }
         }
     </style>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 </head>
 
 <body>
@@ -516,7 +537,14 @@
             role === "user" ? "You" : "Assistant";
 
         const contentElement = document.createElement("div");
-        contentElement.textContent = content;
+
+        if (role === "assistant") {
+            contentElement.innerHTML = DOMPurify.sanitize(
+                marked.parse(content)
+            );
+        } else {
+            contentElement.textContent = content;
+        }
 
         message.append(roleLabel, contentElement);
         container.appendChild(message);
