@@ -359,4 +359,146 @@ def test_retry_after_ai_failure_reuses_user_message(client, agent_id):
     assert len(history) == 2
     assert history[0]["role"] == "user"
     assert history[1]["role"] == "assistant"
+def test_message_content_length_limit(client, agent_id):
+    conversation = client.post(
+        f"/agents/{agent_id}/conversations"
+    ).get_json()["conversation"]
+
+    response = client.post(
+        f"/conversations/{conversation['id']}/messages",
+        json={
+            "role": "user",
+            "content": "x" * 4001,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "content must be at most 4000 characters"
+    )
+
+def test_ai_rate_limit_returns_429(tmp_path):
+    database_path = str(tmp_path / "test_rate_limit.db")
+
+    app = create_app({
+        "TESTING": True,
+        "DATABASE": database_path,
+        "AI_RATE_LIMIT": 2,
+        "AI_RATE_WINDOW_SECONDS": 3600,
+    })
+
+    with app.test_client() as client:
+        agent = client.post(
+            "/agents",
+            json={
+                "name": "Test Agent",
+                "description": "",
+                "system_prompt": "You are helpful.",
+            },
+        ).get_json()["agent"]
+
+        conversation = client.post(
+            f"/agents/{agent['id']}/conversations"
+        ).get_json()["conversation"]
+
+        with patch(
+            "app.generate_reply",
+            return_value="Test reply",
+        ) as mock_generate:
+            first = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json={
+                    "role": "user",
+                    "content": "First request",
+                },
+            )
+
+            second = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json={
+                    "role": "user",
+                    "content": "Second request",
+                },
+            )
+
+            third = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json={
+                    "role": "user",
+                    "content": "Third request",
+                },
+            )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    assert third.status_code == 429
+
+    data = third.get_json()
+
+    assert data["error"] == "AI request rate limit exceeded"
+    assert data["retry_after_seconds"] > 0
+
+    assert mock_generate.call_count == 2
+
+def test_idempotent_replay_does_not_consume_rate_limit(tmp_path):
+    database_path = str(
+        tmp_path / "test_idempotency_rate_limit.db"
+    )
+
+    app = create_app({
+        "TESTING": True,
+        "DATABASE": database_path,
+        "AI_RATE_LIMIT": 1,
+        "AI_RATE_WINDOW_SECONDS": 3600,
+    })
+
+    with app.test_client() as client:
+        agent = client.post(
+            "/agents",
+            json={
+                "name": "Test Agent",
+                "description": "",
+                "system_prompt": "You are helpful.",
+            },
+        ).get_json()["agent"]
+
+        conversation = client.post(
+            f"/agents/{agent['id']}/conversations"
+        ).get_json()["conversation"]
+
+        headers = {
+            "Idempotency-Key": "rate-limit-replay-001"
+        }
+
+        payload = {
+            "role": "user",
+            "content": "Hello",
+        }
+
+        with patch(
+            "app.generate_reply",
+            return_value="Hello!",
+        ) as mock_generate:
+            first = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json=payload,
+                headers=headers,
+            )
+
+            replay = client.post(
+                f"/conversations/{conversation['id']}/messages",
+                json=payload,
+                headers=headers,
+            )
+
+    assert first.status_code == 201
+    assert replay.status_code == 200
+
+    assert replay.get_json()["message"] == (
+        "Request already processed"
+    )
+
+    assert mock_generate.call_count == 1
+
 

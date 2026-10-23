@@ -55,6 +55,20 @@ def init_db(db_path):
             )
         """)
         
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS rate_limit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_key TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """)
+
+        connection.execute("""
+            CREATE INDEX IF NOT EXISTS
+            idx_rate_limit_events_client_time
+            ON rate_limit_events (client_key, created_at)
+        """)
+        
                 # Add idempotency support to existing databases.
         columns = {
             row["name"]
@@ -243,5 +257,62 @@ def get_message_by_idempotency_key(
         ).fetchone()
 
         return dict(row) if row is not None else None
+    finally:
+        connection.close()
+        
+def consume_rate_limit(db_path, client_key, limit, window_seconds, now):
+    """
+    Consume one rate-limit slot.
+
+    Returns (allowed, retry_after_seconds).
+    """
+    connection = get_db_connection(db_path)
+
+    try:
+        window_start = now - window_seconds
+
+        connection.execute(
+            """
+            DELETE FROM rate_limit_events
+            WHERE created_at <= ?
+            """,
+            (window_start,),
+        )
+
+        rows = connection.execute(
+            """
+            SELECT created_at
+            FROM rate_limit_events
+            WHERE client_key = ?
+              AND created_at > ?
+            ORDER BY created_at ASC
+            """,
+            (client_key, window_start),
+        ).fetchall()
+
+        if len(rows) >= limit:
+            oldest = rows[0]["created_at"]
+            retry_after = max(
+                1,
+                window_seconds - (now - oldest),
+            )
+
+            connection.commit()
+            return False, retry_after
+
+        connection.execute(
+            """
+            INSERT INTO rate_limit_events (
+                client_key,
+                created_at
+            )
+            VALUES (?, ?)
+            """,
+            (client_key, now),
+        )
+
+        connection.commit()
+        return True, 0
+
     finally:
         connection.close()

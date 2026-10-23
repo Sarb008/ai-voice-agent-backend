@@ -110,3 +110,42 @@ def test_agent_persists_after_app_restart(tmp_path):
         assert len(saved_agents) == 1
         assert saved_agents[0]["id"] == created_id
         assert saved_agents[0]["name"] == "Persistent Agent"
+        
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        (
+            "name",
+            "x" * 101,
+            "name must be at most 100 characters",
+        ),
+        (
+            "description",
+            "x" * 501,
+            "description must be at most 500 characters",
+        ),
+        (
+            "system_prompt",
+            "x" * 4001,
+            "system_prompt must be at most 4000 characters",
+        ),
+    ],
+)
+def test_create_agent_rejects_oversized_fields(
+    client,
+    field,
+    value,
+    expected_error,
+):
+    payload = {
+        "name": "Test Agent",
+        "description": "Description",
+        "system_prompt": "You are helpful.",
+    }
+
+    payload[field] = value
+
+    response = client.post("/agents", json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == expected_error

@@ -1,6 +1,7 @@
 from llm_provider import generate_reply
 from pathlib import Path
 from uuid import uuid4
+import time
 
 from flask import Flask, request, render_template
 
@@ -13,6 +14,7 @@ from database import (
     create_message,
     get_messages,
     get_message_by_idempotency_key,
+    consume_rate_limit,
 )
 
 
@@ -29,6 +31,9 @@ def create_app(test_config=None):
         app.config.update(test_config)
 
     init_db(app.config["DATABASE"])
+    
+    app.config.setdefault("AI_RATE_LIMIT", 10)
+    app.config.setdefault("AI_RATE_WINDOW_SECONDS", 3600)
     
     @app.get("/")
     def index():
@@ -64,12 +69,31 @@ def create_app(test_config=None):
             return {
                 "error": "system_prompt is required and must be a non-empty string"
             }, 400
+            
+        name = name.strip()
+        description = description.strip()
+        system_prompt = system_prompt.strip()
+
+        if len(name) > 100:
+            return {
+                "error": "name must be at most 100 characters"
+            }, 400
+
+        if len(description) > 500:
+            return {
+                "error": "description must be at most 500 characters"
+            }, 400
+
+        if len(system_prompt) > 4000:
+            return {
+                "error": "system_prompt must be at most 4000 characters"
+            }, 400
 
         agent = {
             "id": str(uuid4()),
-            "name": name.strip(),
-            "description": description.strip(),
-            "system_prompt": system_prompt.strip(),
+            "name": name,
+            "description": description,
+            "system_prompt": system_prompt,
         }
 
         saved_agent = create_agent(app.config["DATABASE"], agent)
@@ -162,6 +186,11 @@ def create_app(test_config=None):
 
         db_path = app.config["DATABASE"]
         content = content.strip()
+        
+        if len(content) > 4000:
+            return {
+                "error": "content must be at most 4000 characters"
+            }, 400
 
         # Idempotency keys are supported for user messages.
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -312,6 +341,27 @@ def create_app(test_config=None):
                 conversation_id,
             )
             return {"error": "Conversation agent not found"}, 500
+        
+        forwarded_for = request.headers.get("X-Forwarded-For")
+
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+        else:
+            client_ip = request.remote_addr or "unknown"
+
+        allowed, retry_after = consume_rate_limit(
+            db_path,
+            client_ip,
+            app.config["AI_RATE_LIMIT"],
+            app.config["AI_RATE_WINDOW_SECONDS"],
+            int(time.time()),
+        )
+
+        if not allowed:
+            return {
+                "error": "AI request rate limit exceeded",
+                "retry_after_seconds": retry_after,
+            }, 429
 
         history = get_messages(db_path, conversation_id)
 
