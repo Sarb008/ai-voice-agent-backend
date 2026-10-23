@@ -353,21 +353,47 @@
     let sending = false;
 
     const STORAGE_AGENT_KEY = "agentforge_selected_agent";
-    const STORAGE_CONVERSATION_KEY = "agentforge_conversation";
+    const STORAGE_CONVERSATIONS_KEY = "agentforge_conversations";
 
-    function saveSession() {
-        if (selectedAgent) {
-            localStorage.setItem(STORAGE_AGENT_KEY, selectedAgent.id);
-        }
-
-        if (conversationId) {
-            localStorage.setItem(STORAGE_CONVERSATION_KEY, conversationId);
+    function getSavedConversations() {
+        try {
+            return JSON.parse(
+                localStorage.getItem(STORAGE_CONVERSATIONS_KEY) || "{}"
+            );
+        } catch {
+            return {};
         }
     }
 
-    function clearSession() {
-        localStorage.removeItem(STORAGE_AGENT_KEY);
-        localStorage.removeItem(STORAGE_CONVERSATION_KEY);
+    function saveSession() {
+        if (!selectedAgent || !conversationId) {
+            return;
+        }
+
+        localStorage.setItem(
+            STORAGE_AGENT_KEY,
+            selectedAgent.id
+        );
+
+        const conversations = getSavedConversations();
+
+        conversations[selectedAgent.id] = conversationId;
+
+        localStorage.setItem(
+            STORAGE_CONVERSATIONS_KEY,
+            JSON.stringify(conversations)
+        );
+    }
+
+    function removeSavedConversation(agentId) {
+        const conversations = getSavedConversations();
+
+        delete conversations[agentId];
+
+        localStorage.setItem(
+            STORAGE_CONVERSATIONS_KEY,
+            JSON.stringify(conversations)
+        );
     }
 
     async function api(url, options = {}) {
@@ -493,6 +519,11 @@
         selectedAgent = agent;
         conversationId = null;
 
+        localStorage.setItem(
+            STORAGE_AGENT_KEY,
+            agent.id
+        );
+
         document.getElementById("current-agent").textContent =
             agent.name;
 
@@ -500,7 +531,7 @@
             agent.description || "AI agent";
 
         document.getElementById("messages").innerHTML =
-            '<div class="empty">Starting conversation...</div>';
+            '<div class="empty">Loading conversation...</div>';
 
         document.getElementById("message-input").disabled = true;
         document.getElementById("send-button").disabled = true;
@@ -508,6 +539,57 @@
         await loadAgents();
 
         try {
+            const conversations = getSavedConversations();
+            const savedConversationId = conversations[agent.id];
+
+            if (savedConversationId) {
+                try {
+                    await api(
+                        `/conversations/${savedConversationId}`
+                    );
+
+                    conversationId = savedConversationId;
+
+                    const data = await api(
+                        `/conversations/${conversationId}/messages`
+                    );
+
+                    const container =
+                        document.getElementById("messages");
+
+                    container.innerHTML = "";
+
+                    if (!data.messages.length) {
+                        container.innerHTML =
+                            '<div class="empty">Conversation ready. Send a message.</div>';
+                    } else {
+                        for (const message of data.messages) {
+                            addMessage(
+                                message.role,
+                                message.content
+                            );
+                        }
+                    }
+
+                    document.getElementById(
+                        "message-input"
+                    ).disabled = false;
+
+                    document.getElementById(
+                        "send-button"
+                    ).disabled = false;
+
+                    document.getElementById(
+                        "message-input"
+                    ).focus();
+
+                    return;
+
+                } catch {
+                    removeSavedConversation(agent.id);
+                }
+            }
+
             const data = await api(
                 `/agents/${agent.id}/conversations`,
                 {
@@ -532,7 +614,7 @@
 
         } catch (error) {
             document.getElementById("messages").innerHTML =
-                '<div class="empty">Could not start conversation.</div>';
+                '<div class="empty">Could not load conversation.</div>';
 
             showNotice(error.message);
         }
@@ -657,63 +739,30 @@
         });
 
     async function restoreSession() {
-        const agentId = localStorage.getItem(STORAGE_AGENT_KEY);
-        const savedConversationId =
-            localStorage.getItem(STORAGE_CONVERSATION_KEY);
+        const agentId =
+            localStorage.getItem(STORAGE_AGENT_KEY);
 
-        if (!agentId || !savedConversationId) {
+        if (!agentId) {
             await loadAgents();
             return;
         }
 
         try {
-            const agentsData = await api("/agents");
+            const data = await api("/agents");
 
-            const agent = agentsData.agents.find(
+            const agent = data.agents.find(
                 item => item.id === agentId
             );
 
             if (!agent) {
-                clearSession();
+                localStorage.removeItem(STORAGE_AGENT_KEY);
                 await loadAgents();
                 return;
             }
 
-            await api(`/conversations/${savedConversationId}`);
-
-            selectedAgent = agent;
-            conversationId = savedConversationId;
-
-            document.getElementById("current-agent").textContent =
-                agent.name;
-
-            document.getElementById("current-description").textContent =
-                agent.description || "AI agent";
-
-            document.getElementById("message-input").disabled = false;
-            document.getElementById("send-button").disabled = false;
-
-            await loadAgents();
-
-            const data = await api(
-                `/conversations/${conversationId}/messages`
-            );
-
-            const container = document.getElementById("messages");
-            container.innerHTML = "";
-
-            if (!data.messages.length) {
-                container.innerHTML =
-                    '<div class="empty">Conversation ready. Send a message.</div>';
-            } else {
-                for (const message of data.messages) {
-                    addMessage(message.role, message.content);
-                }
-            }
+            await selectAgent(agent);
 
         } catch (error) {
-            clearSession();
-
             selectedAgent = null;
             conversationId = null;
 
@@ -721,6 +770,8 @@
 
             document.getElementById("messages").innerHTML =
                 '<div class="empty">Select an agent to start a conversation.</div>';
+
+            showNotice(error.message);
         }
     }
     checkHealth();
