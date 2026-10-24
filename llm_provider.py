@@ -1,8 +1,9 @@
-
 import os
+import time
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai.errors import ServerError
 
 
 load_dotenv()
@@ -40,15 +41,30 @@ def generate_reply(
         for message in messages
     ]
 
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config={
-            "system_instruction": system_prompt,
-        },
-    )
+    max_attempts = 3
 
-    if not response.text:
-        raise RuntimeError("Gemini returned an empty response")
+    for attempt in range(max_attempts):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config={
+                    "system_instruction": system_prompt,
+                },
+            )
 
-    return response.text.strip()
+            if not response.text:
+                raise RuntimeError(
+                    "Gemini returned an empty response"
+                )
+
+            return response.text.strip()
+
+        except ServerError as exc:
+            # Retry only temporary Gemini service-unavailable errors.
+            if exc.code != 503 or attempt == max_attempts - 1:
+                raise
+
+            time.sleep(2 ** attempt)
+
+    raise RuntimeError("Gemini response generation failed")
