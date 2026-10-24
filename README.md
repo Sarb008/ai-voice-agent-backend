@@ -1,17 +1,32 @@
-# AI Voice Agent Backend
+# AgentForge — AI Agent Backend
 
-A Python REST API for creating AI agents, managing conversations, and generating contextual responses using Google's Gemini API. Conversation data is persisted in SQLite, and automated tests verify the API's core functionality.
+AgentForge is a deployed Python/Flask application for creating configurable AI agents, managing persistent conversations, and generating context-aware responses using Google's Gemini API.
+
+The project focuses on backend engineering concerns around AI-powered applications, including REST API design, persistent conversation state, idempotent request handling, input validation, rate limiting, provider-failure handling, automated testing, and production deployment.
+
+A lightweight browser interface is included so the backend can be tested without installing or configuring a local client.
+
+## Live Demo
+
+**Public demo:** https://ai-voice-agent-backend-27ag.onrender.com/
+
+The application is hosted on Render's free tier, so the service may take a short time to wake after inactivity. Gemini responses can also occasionally be affected by upstream model availability or API quota limits.
 
 ## Features
 
-- **Agent management:** Create and list AI agents with configurable system instructions.
-- **Conversation management:** Create conversations associated with specific agents.
-- **AI-powered responses:** Generate context-aware replies using Google's Gemini API.
-- **Persistent conversation history:** Store user and assistant messages in SQLite for multi-turn conversations.
-- **Idempotent message retries:** Use an `Idempotency-Key` header to avoid duplicate message storage and repeated AI generation when retrying an already completed request.
-- **REST API:** Expose JSON-based endpoints using Flask.
-- **Automated testing:** Test API operations, validation, error handling, and idempotency behavior using pytest.
-- **Secure configuration:** Load API credentials from environment variables rather than hardcoding them in source files.
+- **Configurable AI agents:** Create agents with custom names, descriptions, and system prompts.
+- **Persistent conversations:** Create conversations associated with individual agents and store their history in SQLite.
+- **Context-aware Gemini responses:** Send previous conversation messages and agent instructions to Gemini for multi-turn responses.
+- **Recruiter-friendly browser demo:** Create agents and chat with them directly through a lightweight web interface.
+- **Per-agent session restoration:** Restore the selected agent and its conversation when returning to or refreshing the browser demo.
+- **Idempotent message handling:** Use `Idempotency-Key` headers to prevent duplicate message storage and repeated AI generation for completed requests.
+- **Failure recovery:** Preserve user messages when AI generation fails so requests can safely be retried with the same idempotency key.
+- **Transient provider retries:** Retry temporary Gemini `503 Service Unavailable` failures with bounded exponential backoff.
+- **API input validation:** Enforce validation and size limits for agent configuration and message content.
+- **Request rate limiting:** Apply per-client AI-generation limits backed by SQLite to protect the public demo from excessive usage.
+- **Automated testing:** Test API behavior, validation, persistence, AI-provider failures, idempotency, and rate limiting with pytest.
+- **Environment-based configuration:** Keep Gemini credentials and model configuration outside source control.
+- **Production deployment:** Serve the Flask application with Gunicorn and deploy it publicly on Render.
 
 ## Tech Stack
 
@@ -21,98 +36,50 @@ A Python REST API for creating AI agents, managing conversations, and generating
 - Google GenAI SDK
 - Google Gemini API
 - pytest
+- Gunicorn
 - python-dotenv
+- HTML, CSS, and JavaScript
+- Render
 
 ## Project Structure
 
 ```text
 ai-voice-agent-backend/
-├── app.py                # Flask application and API routes
-├── database.py           # SQLite database operations
-├── llm_provider.py       # Gemini integration
-├── tests/
-│   ├── test_agents.py
-│   └── test_conversations.py
-├── .env                  # Local environment variables (not committed)
-├── .gitignore
-├── agents.db             # Local SQLite database (not committed)
-└── README.md
+|-- app.py
+|-- database.py
+|-- llm_provider.py
+|-- requirements.txt
+|-- templates/
+|   `-- index.html
+|-- tests/
+|   |-- test_agents.py
+|   `-- test_conversations.py
+|-- .env
+|-- .gitignore
+|-- agents.db
+`-- README.md
 ```
 
-## Prerequisites
+`app.py` contains the Flask application and API routes, `database.py` handles SQLite persistence and rate-limit storage, and `llm_provider.py` contains the Gemini integration and transient-provider retry logic.
 
-- Python 3.14.7 (the version used during development)
-- A Google AI Studio API key with access to the configured Gemini model
-- Git
-
-## Setup
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/Sarb008/ai-voice-agent-backend.git
-cd ai-voice-agent-backend
-```
-
-### 2. Create and activate a virtual environment
-
-Windows PowerShell:
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-### 3. Install dependencies
-
-Install the project's dependencies:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-Create a `.env` file in the project root:
-
-```env
-GEMINI_API_KEY=your_google_ai_studio_api_key
-GEMINI_MODEL=gemini-3.8-flash
-```
-
-Replace the API key placeholder with your own key. Never commit your real API key.
-
-### 5. Start the server
-
-```powershell
-python app.py
-```
-
-The Flask development server runs locally. Use the address printed in the terminal to access the API.
+The local `.env` and `agents.db` files are excluded from version control.
 
 ## API Endpoints
 
-All request and response bodies use JSON.
-
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/health` | Check whether the API is running |
-| POST | `/agents` | Create an AI agent |
-| GET | `/agents` | List available agents |
-| POST | `/agents/<agent_id>/conversations` | Create a conversation for an agent |
-| GET | `/conversations/<conversation_id>` | Retrieve conversation details |
-| POST | `/conversations/<conversation_id>/messages` | Save a message and generate a Gemini reply for user messages |
-| GET | `/conversations/<conversation_id>/messages` | Retrieve conversation history |
+| `GET` | `/` | Open the AgentForge browser demo |
+| `GET` | `/health` | Check API health |
+| `POST` | `/agents` | Create an AI agent |
+| `GET` | `/agents` | List available agents |
+| `POST` | `/agents/<agent_id>/conversations` | Create a conversation for an agent |
+| `GET` | `/conversations/<conversation_id>` | Retrieve conversation details |
+| `POST` | `/conversations/<conversation_id>/messages` | Save a message and generate an AI response |
+| `GET` | `/conversations/<conversation_id>/messages` | Retrieve conversation history |
 
-### Example workflow
+## Example Workflow
 
-#### 1. Check the API
-
-```http
-GET /health
-```
-
-#### 2. Create an agent
+### 1. Create an agent
 
 ```http
 POST /agents
@@ -122,27 +89,23 @@ Content-Type: application/json
 ```json
 {
   "name": "Campus Helpdesk",
-  "description": "An assistant that helps students with common campus questions.",
-  "system_prompt": "You are a helpful campus helpdesk assistant. Give clear, practical answers to student questions."
+  "description": "Helps students with common campus questions.",
+  "system_prompt": "You are a helpful campus assistant. Give clear and practical answers."
 }
 ```
 
-Save the returned agent ID.
-
-#### 3. Create a conversation
+### 2. Create a conversation
 
 ```http
 POST /agents/<agent_id>/conversations
-Content-Type: application/json
 ```
 
-Replace `<agent_id>` with the ID returned when creating the agent. Save the returned conversation ID.
-
-#### 4. Send a message
+### 3. Send a message
 
 ```http
 POST /conversations/<conversation_id>/messages
 Content-Type: application/json
+Idempotency-Key: request-001
 ```
 
 ```json
@@ -152,68 +115,126 @@ Content-Type: application/json
 }
 ```
 
-The API saves the user's message, sends the conversation context and agent instructions to Gemini, saves the generated assistant reply, and returns both messages.
+For a user message, AgentForge:
 
-#### 5. Retrieve conversation history
+1. validates the request;
+2. checks idempotency state;
+3. persists the user message;
+4. loads the agent and conversation history;
+5. applies the AI-generation rate limit;
+6. sends the conversation context and system prompt to Gemini;
+7. retries temporary Gemini `503` failures with bounded backoff;
+8. persists the generated assistant response; and
+9. returns both messages to the client.
 
-```http
-GET /conversations/<conversation_id>/messages
+## Idempotent Retries
+
+The message endpoint accepts an optional `Idempotency-Key` header for user messages.
+
+If a completed request is repeated with the same key and payload, AgentForge returns the previously stored result rather than generating another AI response.
+
+If the same key is reused with different message content or for another conversation, the API returns `409 Conflict`.
+
+If AI generation fails after the user message has been stored, the client can retry with the same key. AgentForge reuses the existing user message and attempts response generation again rather than inserting a duplicate.
+
+The implementation is designed for ordinary request retries. It does not claim distributed exactly-once AI execution under simultaneous concurrent requests.
+
+## Reliability and Abuse Protection
+
+The public demo includes several safeguards:
+
+- maximum lengths for agent names, descriptions, system prompts, and messages;
+- per-client rate limiting for AI-generation requests;
+- idempotency protection against duplicate completed requests;
+- persistence of user messages across provider failures;
+- bounded retries for temporary Gemini `503` responses;
+- explicit error handling for AI-provider failures; and
+- a Gunicorn request timeout appropriate for slower external AI calls.
+
+The current rate limiter uses SQLite because the deployed demo runs as a small single-service application. A horizontally scaled production system would typically move shared rate-limit state to infrastructure such as Redis.
+
+## Running Locally
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Sarb008/ai-voice-agent-backend.git
+cd ai-voice-agent-backend
 ```
 
-The response contains the messages stored for that conversation.
+### 2. Create a virtual environment
 
-### 6. Retry a message safely
-
-The message endpoint supports an optional `Idempotency-Key` HTTP header for user messages.
-
-```http
-POST /conversations/<conversation_id>/messages
-Content-Type: application/json
-Idempotency-Key: exam-tips-001
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-```json
-{
-  "role": "user",
-  "content": "Give me three practical tips for preparing for a database lab exam."
-}
+### 3. Install dependencies
+
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-**How it works:**
+### 4. Configure Gemini
 
-- Send the same request again with the same key after a successful response: the API returns the stored result without generating another AI response.
-- Reuse a key with different message content or a different conversation: the API returns a `409 Conflict` response.
-- Retry after an AI-provider failure using the same key: the API reuses the previously stored user message and retries response generation rather than inserting another copy.
+Create a `.env` file in the project root:
 
-Generate a new key for each distinct message. Clients should retain the original key when retrying a request whose outcome is uncertain.
+```env
+GEMINI_API_KEY=your_google_ai_studio_api_key
+GEMINI_MODEL=your_gemini_model
+```
 
-**Note:** This implementation handles ordinary retries, but does not guarantee exactly-once AI processing under simultaneous concurrent requests.
+Never commit the real API key.
+
+### 5. Start the development server
+
+```powershell
+python app.py
+```
+
+Open the local address printed by Flask to use the AgentForge browser interface.
 
 ## Running Tests
-
-Run the automated test suite from the project root:
 
 ```powershell
 python -m pytest -q
 ```
 
-The test suite covers agent and conversation operations, input validation, persistent message history, mocked AI responses, AI-provider failures, and idempotency behavior, including duplicate retries, conflicting key reuse, and recovery after a failed AI request.
+The current automated suite contains **23 passing tests** covering agent and conversation operations, validation, persistent message history, mocked AI responses, provider failures, idempotent retries, conflicting idempotency keys, recovery after failed AI generation, message-size limits, and rate-limit behavior.
+
+## Deployment
+
+The public demo is deployed on Render and served using Gunicorn.
+
+Production start command:
+
+```text
+gunicorn --timeout 120 app:app
+```
+
+Secrets such as `GEMINI_API_KEY` and model configuration are supplied through deployment environment variables rather than committed to the repository.
+
+Because the current demo uses SQLite on a free hosted instance, stored demo data should not be treated as durable production data and may be reset when the service filesystem is recreated.
 
 ## Security Notes
 
-- Keep `.env` and `agents.db` out of version control.
-- Never expose API keys in source code, commits, screenshots, or public logs.
-- The Flask development server is intended for local development, not production deployment.
-- Before production use, add appropriate authentication, authorization, rate limiting, and production-grade server configuration.
+- API credentials are loaded from environment variables.
+- `.env` and local SQLite database files are excluded from Git.
+- User-controlled text is validated and size-limited by the backend.
+- The public AI endpoint is rate-limited.
+- Generated Markdown in the browser interface is sanitized before rendering.
+- Authentication and authorization are intentionally outside the scope of the current public portfolio demo.
 
 ## Current Status
 
-Implemented persistent agent and conversation management, context-aware Gemini responses, multi-turn conversation history, idempotency-key support for message retries, and automated tests covering core functionality and failure scenarios.
+AgentForge is a functional deployed portfolio project with persistent AI-agent conversations, Gemini integration, idempotent request handling, provider-failure recovery, API validation, rate limiting, automated testing, and a browser-based demonstration interface.
+
+The project is intentionally scoped as a backend-focused AI application rather than a full production multi-user platform.
 
 ## Future Improvements
 
 - Add authentication and per-user agent ownership.
-- Improve concurrency safety and retry handling.
-- Add structured logging and request tracing.
-- Introduce API schemas and more comprehensive integration tests.
-- Add deployment configuration and operational monitoring.
+- Replace SQLite with PostgreSQL for durable hosted persistence.
+- Use Redis-backed distributed rate limiting for horizontally scaled deployments.
+- Add structured logging, request tracing, and operational metrics.
+- Add API documentation and broader integration testing.
